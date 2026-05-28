@@ -2,7 +2,6 @@
 #include <vector>
 #include <random>
 #include <sstream>
-#include <iomanip>
 #include <glad/glad.h>   // GLAD deve vir sempre antes do GLFW (gerencia ponteiros de funções OpenGL)
 #include <GLFW/glfw3.h>
 
@@ -36,8 +35,8 @@ int pontos = 0;
 int vidas = 3;
 bool jogoAcabou = false;
 float tempoUltimoObjeto = 0.0f; // Marca de tempo da última geração de objeto
-float intervaloObjeto = 0.9f;   // Tempo de espera (em segundos) entre novos objetos
-float velocidadeJogador = 420.0f;
+float intervaloObjeto = 1.3f;   // Tempo de espera (em segundos) entre novos objetos
+float velocidadeJogador = 450.0f;
 
 // Motor de geração de números pseudo-aleatórios usando o algoritmo Mersenne Twister
 std::mt19937 gerador(std::random_device{}());
@@ -85,8 +84,8 @@ void criarObjeto() {
     obj.bonus = sortearBonus();
 
     // Aumenta a velocidade progressivamente com base na pontuação atual
-    float aumento = pontos * 8.0f;
-    obj.velocidade = obj.bonus ? 150.0f + aumento : 180.0f + aumento;
+    float aumento = pontos * 3.0f;
+    obj.velocidade = obj.bonus ? 170.0f + aumento : 150.0f + aumento;
 
     objetos.push_back(obj);
 }
@@ -317,16 +316,157 @@ void desenharVidas() {
     }
 }
 
-// Renderiza uma caixa cinza com faixas decorativas indicando fim de jogo (HUD abstrato)
+// ============================================================
+// SISTEMA DE FONTE PIXEL (5 colunas x 7 linhas por glifo)
+// Cada glifo é um array de 7 strings de 5 chars: 'X' = pixel ativo, ' ' = vazio.
+// Não requer nenhuma biblioteca externa de fonte.
+// ============================================================
+
+// Retorna o glifo (bitmap 5x7) correspondente ao caractere solicitado.
+// Maiúsculas do alfabeto necessárias para "GAME OVER / PRESS R TO RESTART / ESC TO EXIT".
+const char** obterGlifo(char c) {
+    static const char* GLIFO_A[7] = {" XXX ", "X   X", "X   X", "XXXXX", "X   X", "X   X", "X   X"};
+    static const char* GLIFO_C[7] = {" XXX ", "X   X", "X    ", "X    ", "X    ", "X   X", " XXX "};
+    static const char* GLIFO_E[7] = {"XXXXX", "X    ", "X    ", "XXXX ", "X    ", "X    ", "XXXXX"};
+    static const char* GLIFO_G[7] = {" XXX ", "X    ", "X    ", "X  XX", "X   X", "X   X", " XXX "};
+    static const char* GLIFO_I[7] = {" XXX ", "  X  ", "  X  ", "  X  ", "  X  ", "  X  ", " XXX "};
+    static const char* GLIFO_M[7] = {"X   X", "XX XX", "X X X", "X   X", "X   X", "X   X", "X   X"};
+    static const char* GLIFO_O[7] = {" XXX ", "X   X", "X   X", "X   X", "X   X", "X   X", " XXX "};
+    static const char* GLIFO_P[7] = {"XXXX ", "X   X", "X   X", "XXXX ", "X    ", "X    ", "X    "};
+    static const char* GLIFO_R[7] = {"XXXX ", "X   X", "X   X", "XXXX ", "X X  ", "X  X ", "X   X"};
+    static const char* GLIFO_S[7] = {" XXXX", "X    ", "X    ", " XXX ", "    X", "    X", "XXXX "};
+    static const char* GLIFO_T[7] = {"XXXXX", "  X  ", "  X  ", "  X  ", "  X  ", "  X  ", "  X  "};
+    static const char* GLIFO_V[7] = {"X   X", "X   X", "X   X", "X   X", " X X ", " X X ", "  X  "};
+    static const char* GLIFO_X[7] = {"X   X", "X   X", " X X ", "  X  ", " X X ", "X   X", "X   X"};
+    static const char* GLIFO_SP[7] = {"     ", "     ", "     ", "     ", "     ", "     ", "     "};
+
+    switch (c) {
+        case 'A': return GLIFO_A;
+        case 'C': return GLIFO_C;
+        case 'E': return GLIFO_E;
+        case 'G': return GLIFO_G;
+        case 'I': return GLIFO_I;
+        case 'M': return GLIFO_M;
+        case 'O': return GLIFO_O;
+        case 'P': return GLIFO_P;
+        case 'R': return GLIFO_R;
+        case 'S': return GLIFO_S;
+        case 'T': return GLIFO_T;
+        case 'V': return GLIFO_V;
+        case 'X': return GLIFO_X;
+        default:  return GLIFO_SP; // Espaço ou caractere não mapeado
+    }
+}
+
+// Calcula a largura em pixels de tela que uma string ocupa com determinado pixelSize.
+// Fórmula: N chars * (5 colunas + 1 de gap) * pixelSize — 1 gap no último char.
+float larguraTexto(const char* texto, float pixelSize) {
+    int n = 0;
+    while (texto[n] != '\0') n++;
+    if (n == 0) return 0.0f;
+    return (float)(n * 6 - 1) * pixelSize;
+}
+
+// Desenha um único caractere pixel-a-pixel a partir de (x, y) usando retângulos.
+// pixelSize: tamanho em pixels de tela de cada "pixel" do glifo.
+void desenharCaractere(char c, float x, float y, float pixelSize,
+                       float r, float g, float b) {
+    const char** glifo = obterGlifo(c);
+    for (int linha = 0; linha < 7; linha++) {
+        for (int col = 0; col < 5; col++) {
+            if (glifo[linha][col] == 'X') {
+                Retangulo pixel{
+                    x + col * pixelSize,
+                    y + linha * pixelSize,
+                    pixelSize - 0.5f, // leve gap entre pixels para visual retrô
+                    pixelSize - 0.5f
+                };
+                desenharRetangulo(pixel, r, g, b);
+            }
+        }
+    }
+}
+
+// Desenha uma string inteira horizontalmente a partir de (x, y).
+void desenharTexto(const char* texto, float x, float y, float pixelSize,
+                   float r, float g, float b) {
+    float cursorX = x;
+    for (int i = 0; texto[i] != '\0'; i++) {
+        desenharCaractere(texto[i], cursorX, y, pixelSize, r, g, b);
+        cursorX += (5 + 1) * pixelSize; // avança 5 colunas + 1 pixel de separação
+    }
+}
+
+// Centraliza horizontalmente e desenha o texto na posição Y indicada.
+void desenharTextoCentrado(const char* texto, float y, float pixelSize,
+                           float r, float g, float b) {
+    float x = ((float)LARGURA - larguraTexto(texto, pixelSize)) / 2.0f;
+    desenharTexto(texto, x, y, pixelSize, r, g, b);
+}
+
+// ============================================================
+// Tela de Fim de Jogo — substitui o placeholder por texto pixel
+// real exibindo "GAME OVER" e as instruções de reinício/saída,
+// lidas diretamente das teclas mapeadas em processarEntrada().
+//   • Reiniciar → tecla R  (GLFW_KEY_R)
+//   • Sair      → tecla ESC (GLFW_KEY_ESCAPE)
+// ============================================================
 void desenharFimDeJogo() {
-    Retangulo fundo{200.0f, 220.0f, 400.0f, 120.0f};
-    desenharRetangulo(fundo, 0.15f, 0.15f, 0.15f);
+    // --- Painel de fundo ---
+    // Fundo escuro cobrindo a região central da tela
+    Retangulo fundo{90.0f, 145.0f, 620.0f, 295.0f};
+    desenharRetangulo(fundo, 0.04f, 0.04f, 0.07f);
 
-    Retangulo linha1{250.0f, 255.0f, 300.0f, 20.0f};
-    Retangulo linha2{280.0f, 295.0f, 240.0f, 20.0f};
+    // Borda vermelha escura ao redor do painel (4 tiras finas)
+    desenharRetangulo({90.0f,  145.0f, 620.0f,   3.0f}, 0.55f, 0.08f, 0.08f); // topo
+    desenharRetangulo({90.0f,  437.0f, 620.0f,   3.0f}, 0.55f, 0.08f, 0.08f); // base
+    desenharRetangulo({90.0f,  145.0f,   3.0f, 295.0f}, 0.55f, 0.08f, 0.08f); // esq
+    desenharRetangulo({707.0f, 145.0f,   3.0f, 295.0f}, 0.55f, 0.08f, 0.08f); // dir
 
-    desenharRetangulo(linha1, 0.9f, 0.1f, 0.1f);
-    desenharRetangulo(linha2, 0.9f, 0.9f, 0.9f);
+    // --- "GAME OVER" — pixelSize 6 → glifo 30×42 px por char ---
+    // Sombra (deslocada 2px para baixo/direita, cor escura)
+    desenharTextoCentrado("GAME OVER", 177.0f, 6.0f, 0.35f, 0.0f, 0.0f);
+    // Texto principal vermelho vibrante
+    desenharTextoCentrado("GAME OVER", 175.0f, 6.0f, 0.95f, 0.18f, 0.18f);
+
+    // Linha divisória cinza entre título e instruções
+    Retangulo divisor{160.0f, 240.0f, 480.0f, 2.0f};
+    desenharRetangulo(divisor, 0.30f, 0.30f, 0.30f);
+
+    // --- Instrução de reinício — tecla R (mapeada em processarEntrada) ---
+    // pixelSize 3 → glifo 15×21 px por char
+    // Rótulo da tecla em amarelo, restante em cinza claro
+    desenharTexto("R",
+        ((float)LARGURA - larguraTexto("PRESS R TO RESTART", 3.0f)) / 2.0f
+            + larguraTexto("PRESS ", 3.0f),
+        265.0f, 3.0f, 0.98f, 0.82f, 0.15f); // "R" em amarelo
+
+    // String completa em cinza (a letra R amarela será sobrescrita acima)
+    desenharTextoCentrado("PRESS R TO RESTART", 265.0f, 3.0f, 0.80f, 0.80f, 0.80f);
+
+    // Redesenha só o "R" em amarelo por cima para destacá-lo
+    {
+        float baseX = ((float)LARGURA - larguraTexto("PRESS R TO RESTART", 3.0f)) / 2.0f;
+        float rX    = baseX + larguraTexto("PRESS ", 3.0f);
+        desenharCaractere('R', rX, 265.0f, 3.0f, 0.98f, 0.82f, 0.15f);
+    }
+
+    // --- Instrução de saída — tecla ESC (mapeada em processarEntrada) ---
+    desenharTextoCentrado("ESC TO EXIT", 310.0f, 3.0f, 0.55f, 0.55f, 0.55f);
+    // "ESC" em tom levemente avermelhado para indicar perigo/saída
+    {
+        float baseX = ((float)LARGURA - larguraTexto("ESC TO EXIT", 3.0f)) / 2.0f;
+        desenharTexto("ESC", baseX, 310.0f, 3.0f, 0.90f, 0.40f, 0.40f);
+    }
+
+    // Pontuação final — barra de blocos dourados centralizada na base do painel
+    // (o valor numérico exato também aparece na barra de título via atualizarTitulo)
+    int blocosPontos = pontos > 24 ? 24 : pontos;
+    float scoreBaseX = (float)LARGURA / 2.0f - blocosPontos * 9.0f / 2.0f;
+    for (int i = 0; i < blocosPontos; i++) {
+        Retangulo bloco{scoreBaseX + i * 9.0f, 395.0f, 7.0f, 7.0f};
+        desenharRetangulo(bloco, 0.98f, 0.75f, 0.1f);
+    }
 }
 
 // Concentra todas as diretivas de desenho do frame
